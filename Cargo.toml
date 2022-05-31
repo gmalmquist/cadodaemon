@@ -2,7 +2,11 @@
 name = "cadodaemon"
 version = "0.1.0"
 edition = "2021"
+description = "a daemon for CAD modeling"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+nalgebra = "0.31"
+implicit3d = "0.14"
+tessellation = "0.8"
