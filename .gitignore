@@ -1,0 +1,6 @@
+/target
+.direnv/
+.idea/
+Cargo.lock
+bin/
+pkg/
