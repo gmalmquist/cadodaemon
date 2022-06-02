@@ -134,12 +134,61 @@ impl Mesh {
         }
         let vertices = vertices.unwrap();
         self.normals.remove(face);
-        self.faces_to_group.remove(face);
+        let group = self.faces_to_group.remove(face).unwrap();
+        if let Some(group) = group {
+            self.groups[group].faces.retain(|f| f != &face);
+        }
         for v in vertices {
             self.vertices_to_faces[v].retain(|f| f != &face);
             for e in self.vertices_to_edges[v].values() {
                 self.edges_to_faces[e].retain(|f| f != &face);
             }
+        }
+    }
+
+    pub fn remove_edge(&mut self, e: EdgeId) {
+        if !self.edges.contains(e) {
+            return;
+        }
+        let edge = e.edge(self).clone();
+
+        self.vertices_to_edges[edge.src].remove(&edge.dst);
+        self.vertices_to_edges[edge.dst].remove(&edge.src);
+
+        // Removing an edge destroys faces it is attached to.
+        let faces_to_remove = self.edges_to_faces.remove(e).unwrap();
+        for f in faces_to_remove {
+            self.remove_face(f);
+        }
+
+        self.edges.remove(e);
+    }
+
+    pub fn remove_vertex(&mut self, v: Vertex) {
+        if !self.vertices.contains(v) {
+            return;
+        }
+
+        // Remove all adjacent edges
+        let edges_to_remove = self.vertices_to_edges.remove(v).unwrap();
+        for e in edges_to_remove.values() {
+            self.remove_edge(*e);
+        }
+
+        // Remove all adjacent faces
+        self.vertices_to_faces.remove(v);
+        self.vertices.remove(v);
+    }
+
+    pub fn ungroup(&mut self, gid: GroupId) {
+        let group = self.groups.remove(gid);
+        if group.is_none() {
+            return;
+        }
+        let group = group.unwrap();
+
+        for face in group.faces {
+            self.faces_to_group[face] = None;
         }
     }
 
