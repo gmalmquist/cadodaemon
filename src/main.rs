@@ -1,5 +1,5 @@
-use nalgebra::{Point3, Vector3};
 use crate::ops::Pivot;
+use nalgebra::{Point3, Vector3};
 
 mod mesh;
 mod ops;
