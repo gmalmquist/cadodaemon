@@ -1,5 +1,6 @@
 use nalgebra::{Point, Point3, Vector3};
 use obj::Group;
+use crate::ops::Pivot;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
 pub struct Face(usize);
@@ -15,6 +16,7 @@ pub struct Corner {
 
 #[derive(Clone, Debug)]
 pub struct Mesh {
+    pub name: String,
     pub vertices: Vec<Point3<f64>>,
     pub faces: Vec<Vec<Vertex>>,
     pub normals: Vec<Option<Vector3<f64>>>,
@@ -52,6 +54,7 @@ impl<T> Iterator for TopologyIter<T> {
 impl Mesh {
     pub fn new() -> Self {
         Self {
+            name: "".to_string(),
             vertices: vec![],
             faces: vec![],
             normals: vec![],
@@ -77,12 +80,37 @@ impl Mesh {
         face
     }
 
+    pub fn scale_mesh(&mut self, amount: Vector3<f64>, pivot: Pivot) {
+        let pivot: Point3<f64> = match pivot {
+            Pivot::Origin => Point3::origin(),
+            Pivot::Centroid => self.centroid(),
+            Pivot::Point(p) => p,
+        };
+        for pt in &mut self.vertices {
+            let delta = *pt - pivot;
+            *pt = pivot + (delta.component_mul(&amount));
+        }
+    }
+
     pub fn faces(&self) -> TopologyIter<Face> {
         TopologyIter::new(self.faces.len(), Box::new(|i| Face(i)))
     }
 
     pub fn vertices(&self) -> TopologyIter<Vertex> {
         TopologyIter::new(self.vertices.len(), Box::new(|i| Vertex(i)))
+    }
+
+    pub fn centroid(&self) -> Point3<f64> {
+        let mut centroid = Point3::origin();
+        if self.vertices.len() == 0 {
+            return centroid;
+        }
+        for pt in &self.vertices {
+            centroid.x += pt.x;
+            centroid.y += pt.y;
+            centroid.z += pt.z;
+        }
+        centroid / self.vertices.len() as f64
     }
 
     pub fn compute_normals(&mut self) {
@@ -240,6 +268,9 @@ impl From<obj::ObjData> for Mesh {
         }
         for o in obj.objects {
             for group in o.groups {
+                if mesh.name.len() == 0 {
+                    mesh.name = group.name.clone();
+                }
                 for poly in group.polys {
                     let mut face = vec![];
                     for obj::IndexTuple(pos, _, _) in poly.0 {
@@ -267,9 +298,9 @@ impl From<Mesh> for obj::Obj {
                 .collect(),
             objects: vec![
                 obj::Object {
-                    name: "mesh".to_string(),
+                    name: mesh.name.clone(),
                     groups: vec![obj::Group {
-                        name: "mesh".to_string(),
+                        name: mesh.name.clone(),
                         index: 0,
                         material: None,
                         polys: mesh.faces()

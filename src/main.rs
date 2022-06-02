@@ -1,11 +1,18 @@
+use nalgebra::{Point3, Vector3};
+use crate::ops::Pivot;
+
 mod mesh;
+mod ops;
 
 fn main() {
     println!("Hello, world!");
 
     let obj = obj::Obj::load(std::path::Path::new("./test-meshes/cube.obj"))
         .expect("Failed to load test input file ./test-meshes/cube.obj");
-    let mesh: mesh::Mesh = obj.into();
+    let mut mesh: mesh::Mesh = obj.into();
+
+    mesh.scale_mesh(Vector3::new(1., 2., 1.), Pivot::Origin);
+
     let obj: obj::Obj = mesh.into();
 
     obj.save(std::path::Path::new("./test-meshes/output.obj"))
