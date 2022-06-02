@@ -1,12 +1,18 @@
 use crate::ops::Pivot;
 use nalgebra::{Point3, Vector3};
 use std::collections::{HashMap, HashSet};
+use crate::idx::{Index, IndexedStore};
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+extern crate derive_more;
+use derive_more::{From, Into};
+
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Into, From)]
 pub struct Face(usize);
+impl Index for Face {}
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Into, From)]
 pub struct Vertex(usize);
+impl Index for Vertex {}
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
 pub struct Corner {
@@ -14,8 +20,9 @@ pub struct Corner {
     pub index: usize,
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Into, From)]
 pub struct GroupId(usize);
+impl Index for GroupId {}
 
 #[derive(Clone, Debug)]
 pub struct Group {
@@ -23,8 +30,9 @@ pub struct Group {
     pub faces: Vec<Face>,
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Into, From)]
 pub struct EdgeId(usize);
+impl Index for EdgeId {}
 
 #[derive(Clone, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
 pub struct Edge {
@@ -35,15 +43,15 @@ pub struct Edge {
 #[derive(Clone, Debug)]
 pub struct Mesh {
     pub name: String,
-    pub vertices: Vec<Point3<f64>>,
-    pub edges: Vec<Edge>,
-    pub faces: Vec<Vec<Vertex>>,
-    pub normals: Vec<Option<Vector3<f64>>>,
-    pub groups: Vec<Group>,
-    faces_to_group: Vec<Option<GroupId>>,
-    vertices_to_faces: Vec<Vec<Face>>,
-    vertices_to_edges: Vec<HashMap<Vertex, EdgeId>>,
-    edges_to_faces: Vec<Vec<Face>>,
+    pub vertices: IndexedStore<Vertex, Point3<f64>>,
+    pub edges: IndexedStore<EdgeId, Edge>,
+    pub faces: IndexedStore<Face, Vec<Vertex>>,
+    pub normals: IndexedStore<Face, Option<Vector3<f64>>>,
+    pub groups: IndexedStore<GroupId, Group>,
+    faces_to_group: IndexedStore<Face, Option<GroupId>>,
+    vertices_to_faces: IndexedStore<Vertex, Vec<Face>>,
+    vertices_to_edges: IndexedStore<Vertex, HashMap<Vertex, EdgeId>>,
+    edges_to_faces: IndexedStore<EdgeId, Vec<Face>>,
 }
 
 pub struct TopologyIter<T> {
@@ -79,45 +87,89 @@ impl Mesh {
     pub fn new() -> Self {
         Self {
             name: "".to_string(),
-            vertices: vec![],
-            edges: vec![],
-            faces: vec![],
-            normals: vec![],
-            groups: vec![],
-            faces_to_group: vec![],
-            vertices_to_faces: vec![],
-            vertices_to_edges: vec![],
-            edges_to_faces: vec![],
+            vertices: IndexedStore::new(),
+            edges: IndexedStore::new(),
+            faces: IndexedStore::new(),
+            normals: IndexedStore::new(),
+            groups: IndexedStore::new(),
+            faces_to_group: IndexedStore::new(),
+            vertices_to_faces: IndexedStore::new(),
+            vertices_to_edges: IndexedStore::new(),
+            edges_to_faces: IndexedStore::new(),
+        }
+    }
+
+    pub fn compact(self) -> Self {
+        let mut compacted = Mesh::new();
+        compacted.name = self.name.clone();
+        let mut vertex_remap: HashMap<Vertex, Vertex> = HashMap::new();
+        let mut face_remap: HashMap<Face, Face> = HashMap::new();
+
+        for vertex in self.vertices.indices() {
+            let nv = compacted.add_vertex(*vertex.to_point(&self), None);
+            vertex_remap.insert(vertex, nv);
+        }
+
+        for face in self.faces.indices() {
+            let nf = compacted.add_face(face.vertices(&self).iter()
+                .map(|v| *vertex_remap.get(v).unwrap())
+                .collect());
+            face_remap.insert(face, nf);
+        }
+
+        for edge in self.edges.values() {
+            compacted.add_edge(Edge::new(
+                *vertex_remap.get(&edge.src).unwrap(),
+                *vertex_remap.get(&edge.dst).unwrap(),
+            ));
+        }
+
+        compacted
+    }
+
+    pub fn remove_face(&mut self, face: Face) {
+        let vertices = self.faces.remove(face);
+        if vertices.is_none() {
+            return;
+        }
+        let vertices = vertices.unwrap();
+        self.normals.remove(face);
+        self.faces_to_group.remove(face);
+        for v in vertices {
+            self.vertices_to_faces[v].retain(|f| f != &face);
+            for e in self.vertices_to_edges[v].values() {
+                self.edges_to_faces[e].retain(|f| f != &face);
+            }
         }
     }
 
     pub fn add_vertex(&mut self, point: Point3<f64>, dedup_eps: Option<f64>) -> Vertex {
         if let Some(eps) = dedup_eps {
-            for vi in 0..self.vertices.len() {
+            for vi in self.vertices() {
                 let v = &self.vertices[vi];
                 if nalgebra::distance(v, &point) < eps {
-                    return Vertex(vi);
+                    return vi;
                 }
             }
         }
-        self.vertices.push(point);
+        let vertex = self.vertices.push(point);
         self.vertices_to_edges.push(HashMap::new());
         self.vertices_to_faces.push(vec![]);
-        Vertex(self.vertices.len() - 1)
+        vertex
     }
 
     pub fn add_face(&mut self, vertices: Vec<Vertex>) -> Face {
-        self.faces.push(vertices);
+        let face = self.faces.push(vertices);
         self.faces_to_group.push(None);
-        let face = Face(self.faces.len() - 1);
+        face.assert_valid(self);
 
         for c in face.corners(&self) {
             let a = c.to_vertex(&self);
-            self.vertices_to_faces[a.0].push(face.clone());
+            self.vertices_to_faces[a].push(face.clone());
 
             let b = c.next(&self).to_vertex(&self);
             let edge = self.add_edge(Edge::new(a, b));
-            self.edges_to_faces[edge.0].push(face);
+            self.edges_to_faces[edge].push(face);
         }
 
         face
@@ -125,22 +177,21 @@ impl Mesh {
 
     pub fn add_edge(&mut self, edge: Edge) -> EdgeId {
         edge.assert_valid(&self);
-        if let Some(eid) = self.vertices_to_edges[edge.src.0].get(&edge.dst) {
+        if let Some(eid) = self.vertices_to_edges[edge.src].get(&edge.dst) {
             return eid.clone();
         }
-        let eid = EdgeId(self.edges.len());
-        self.vertices_to_edges[edge.src.0].insert(edge.dst, eid);
-        self.vertices_to_edges[edge.dst.0].insert(edge.src, eid);
-        self.edges.push(edge);
+        let eid = self.edges.push(edge);
+        let edge = &self.edges[eid];
+        self.vertices_to_edges[edge.src].insert(edge.dst, eid);
+        self.vertices_to_edges[edge.dst].insert(edge.src, eid);
         self.edges_to_faces.push(vec![]);
         eid
     }
 
     pub fn add_group(&mut self, group: Group) -> GroupId {
-        self.groups.push(group);
-        let gid = GroupId(self.groups.len() - 1);
-        for face in &self.groups[gid.0].faces {
-            self.faces_to_group[face.0] = Some(gid);
+        let gid = self.groups.push(group);
+        for face in &self.groups[gid].faces {
+            self.faces_to_group[face] = Some(gid);
         }
         gid
     }
@@ -152,48 +203,49 @@ impl Mesh {
             Pivot::Point(p) => p,
             Pivot::IndividualCentroids => self.centroid(),
         };
-        for pt in &mut self.vertices {
+        let vertices: Vec<Vertex> = self.vertices().collect();
+        for v in vertices {
+            let pt = v.to_point(&self);
             let delta = *pt - pivot;
-            *pt = pivot + (delta.component_mul(&amount));
+            self.vertices[v] = pivot + delta.component_mul(&amount);
         }
     }
 
-    pub fn faces(&self) -> TopologyIter<Face> {
-        TopologyIter::new(self.faces.len(), Box::new(|i| Face(i)))
+    pub fn faces(&self) -> impl Iterator<Item=Face> + '_ {
+        self.faces.indices()
     }
 
-    pub fn vertices(&self) -> TopologyIter<Vertex> {
-        TopologyIter::new(self.vertices.len(), Box::new(|i| Vertex(i)))
+    pub fn vertices(&self) -> impl Iterator<Item=Vertex> + '_  {
+        self.vertices.indices()
     }
 
-    pub fn edges(&self) -> TopologyIter<EdgeId> {
-        TopologyIter::new(self.edges.len(), Box::new(|i| EdgeId(i)))
+    pub fn edges(&self) -> impl Iterator<Item=EdgeId> + '_  {
+        self.edges.indices()
     }
 
     pub fn centroid(&self) -> Point3<f64> {
         let mut centroid = Point3::origin();
-        if self.vertices.len() == 0 {
+        if self.vertices.count() == 0 {
             return centroid;
         }
-        for pt in &self.vertices {
+        for pt in self.vertices.values() {
             centroid.x += pt.x;
             centroid.y += pt.y;
             centroid.z += pt.z;
         }
-        centroid / self.vertices.len() as f64
+        centroid / self.vertices.count() as f64
     }
 
     pub fn compute_normals(&mut self) {
         self.assert_valid();
-        self.normals.clear();
-        for i in 0..self.faces.len() {
-            self.normals.push(Some(Face(i).compute_normal(self)));
+        for f in self.faces.indices() {
+            self.normals.set(f, Some(f.compute_normal(self)));
         }
     }
 
     pub fn validate(&self) -> bool {
-        for f in 0..self.faces.len() {
-            if !Face(f).is_valid(self) {
+        for f in self.faces.indices() {
+            if !f.is_valid(self) {
                 return false;
             }
         }
@@ -216,18 +268,17 @@ impl Group {
 
 impl Face {
     pub fn vertices(self, mesh: &Mesh) -> &Vec<Vertex> {
-        &mesh.faces[self.0]
+        &mesh.faces[self]
     }
 
-    pub fn corner_count(&self, mesh: &Mesh) -> usize {
-        mesh.faces[self.0].len()
+    pub fn corner_count(self, mesh: &Mesh) -> usize {
+        mesh.faces[self].len()
     }
 
-    pub fn corners(&self, mesh: &Mesh) -> TopologyIter<Corner> {
-        let face = self.clone();
+    pub fn corners(self, mesh: &Mesh) -> TopologyIter<Corner> {
         TopologyIter::new(
-            mesh.faces[self.0].len(),
-            Box::new(move |i| Corner { face, index: i }),
+            mesh.faces[self].len(),
+            Box::new(move |i| Corner { face: self.clone(), index: i }),
         )
     }
 
@@ -238,8 +289,8 @@ impl Face {
         }
     }
 
-    pub fn get_normal<'m>(&self, mesh: &'m Mesh) -> Option<&'m Vector3<f64>> {
-        match mesh.normals.get(self.0) {
+    pub fn get_normal(self, mesh: &Mesh) -> Option<&Vector3<f64>> {
+        match mesh.normals.get(self) {
             Some(n) => n.as_ref(),
             None => None,
         }
@@ -265,10 +316,13 @@ impl Face {
     }
 
     pub fn is_valid(&self, mesh: &Mesh) -> bool {
+        if !mesh.faces.contains(*self) {
+            return false;
+        }
         if self.is_degenerate(mesh) {
             return false;
         }
-        for v in &mesh.faces[self.0] {
+        for v in &mesh.faces[*self] {
             if !v.is_valid(mesh) {
                 return false;
             }
@@ -277,7 +331,7 @@ impl Face {
     }
 
     pub fn is_degenerate(&self, mesh: &Mesh) -> bool {
-        let corners = &mesh.faces[self.0];
+        let corners = &mesh.faces[*self];
         if corners.len() < 3 {
             return true;
         }
@@ -294,11 +348,11 @@ impl Face {
 
 impl Vertex {
     fn to_point(self, mesh: &Mesh) -> &Point3<f64> {
-        &mesh.vertices[self.0]
+        &mesh.vertices[self]
     }
 
     pub fn is_valid(&self, mesh: &Mesh) -> bool {
-        self.0 < mesh.vertices.len()
+        mesh.vertices.contains(*self)
     }
 
     pub fn assert_valid(&self, mesh: &Mesh) {
@@ -308,7 +362,7 @@ impl Vertex {
 
 impl Corner {
     fn to_vertex(self, mesh: &Mesh) -> Vertex {
-        mesh.faces[self.face.0][self.index]
+        mesh.faces[self.face][self.index]
     }
 
     fn next(&self, mesh: &Mesh) -> Corner {
@@ -355,7 +409,35 @@ impl EdgeId {
     }
 
     pub fn edge(self, mesh: &Mesh) -> &Edge {
-        &mesh.edges[self.0]
+        &mesh.edges[self]
+    }
+
+    pub fn opposite_face(&self, face: &Face, mesh: &Mesh) -> Option<Face> {
+        for f in &mesh.edges_to_faces[*self] {
+            if f != face {
+                return Some(f.clone());
+            }
+        }
+        None
+    }
+
+    pub fn opposite_vertex(self, v: Vertex, mesh: &Mesh) -> Vertex {
+        let (src, dst) = self.vertices(mesh);
+        if src == v {
+            return dst
+        }
+        src
+    }
+
+    pub fn is_valid(&self, mesh: &Mesh) -> bool {
+        if !mesh.edges.contains(*self) {
+            return false;
+        }
+        self.edge(mesh).is_valid(mesh)
+    }
+
+    pub fn assert_valid(&self, mesh: &Mesh) {
+        assert!(self.is_valid(mesh));
     }
 }
 
@@ -369,16 +451,6 @@ impl Edge {
         Self {
             src: a,
             dst: b,
-        }
-    }
-
-    pub fn other(&self, v: Vertex) -> Vertex {
-        if self.src == v {
-            self.dst
-        } else if self.dst == v {
-            self.src
-        } else {
-            panic!("input vertex does not belong to this edge!")
         }
     }
 
@@ -435,9 +507,11 @@ impl From<obj::Obj> for Mesh {
 
 impl From<Mesh> for obj::Obj {
     fn from(mesh: Mesh) -> Self {
+        let mesh = mesh.compact();
+
         let mut used_faces = HashSet::new();
         let mut groups = vec![];
-        for group in &mesh.groups {
+        for group in mesh.groups.values() {
             groups.push(obj::Group {
                 name: group.name.clone(),
                 index: groups.len(),
@@ -457,7 +531,7 @@ impl From<Mesh> for obj::Obj {
                 },
             });
         }
-        if used_faces.len() < mesh.faces.len() {
+        if used_faces.len() < mesh.faces.count() {
             // add default object
             groups.push(obj::Group {
                 name: mesh.name.clone(),
@@ -481,7 +555,7 @@ impl From<Mesh> for obj::Obj {
         let data = obj::ObjData {
             position: mesh
                 .vertices
-                .iter()
+                .values()
                 .map(|v| [v.x as f32, v.y as f32, v.z as f32])
                 .collect(),
             objects: vec![obj::Object {

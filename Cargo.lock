@@ -343,6 +343,7 @@ name = "cadodaemon"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "derive_more",
  "implicit3d",
  "nalgebra 0.31.0",
  "obj",

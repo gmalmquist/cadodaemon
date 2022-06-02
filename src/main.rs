@@ -3,6 +3,7 @@ use nalgebra::{Point3, Vector3};
 
 mod mesh;
 mod ops;
+mod idx;
 
 fn main() {
     println!("Hello, world!");
